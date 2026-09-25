@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# VESPER NUKER v1.1 — crash-safe build
+# VESPER NUKER v2.0 — bulletproof build
 
 import asyncio
 import aiohttp
@@ -12,18 +12,20 @@ import time
 import traceback
 import ssl
 
-# ---- Windows PyInstaller fix: force selector event loop BEFORE aiohttp import ----
 if sys.platform.startswith("win"):
-    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    try:
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    except Exception:
+        pass
 
 try:
     from colorama import Fore, Style, init
     init(autoreset=True)
 except Exception:
-    class _Dummy:
+    class _D:
         def __getattr__(self, k):
             return ""
-    Fore = Style = _Dummy()
+    Fore = Style = _D()
     def init(*a, **k):
         pass
 
@@ -35,11 +37,11 @@ BANNER = r"""
    \ \/ /   |  __|  `--. \|  __| |    / |  __| 
     \  /    | |___ /\__/ /| |___ | |\ \ | |___ 
      \/     \____/ \____/ \____/ \_| \_|\____/ 
-            V E S P E R   N U K E R   v1.1
+            V E S P E R   N U K E R   v2.0
 """
 
 API = "https://discord.com/api/v10"
-UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Vesper/1.1"
+UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Vesper/2.0"
 
 
 def pause_exit(code=0):
@@ -54,6 +56,20 @@ def pause_exit(code=0):
 
 def rand_str(n=10):
     return ''.join(random.choices(string.ascii_lowercase + string.digits, k=n))
+
+
+def status_hint(s):
+    if s == 200 or s == 201 or s == 204:
+        return f"{Fore.GREEN}OK"
+    if s == 401:
+        return f"{Fore.RED}401 UNAUTHORIZED (token invalid/expired)"
+    if s == 403:
+        return f"{Fore.RED}403 FORBIDDEN (no permission / not in server)"
+    if s == 404:
+        return f"{Fore.RED}404 NOT FOUND (wrong id)"
+    if s == 429:
+        return f"{Fore.YELLOW}429 RATE LIMITED"
+    return f"{Fore.YELLOW}{s}"
 
 
 class VesperNuker:
@@ -71,7 +87,6 @@ class VesperNuker:
         self.sem = asyncio.Semaphore(15)
 
     async def __aenter__(self):
-        # build SSL context that works inside PyInstaller exe
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
@@ -107,6 +122,12 @@ class VesperNuker:
                     await asyncio.sleep(0.5)
                     continue
         return 0, "exhausted"
+
+    async def whoami(self):
+        return await self._req("GET", "/users/@me")
+
+    async def my_guilds(self):
+        return await self._req("GET", "/users/@me/guilds")
 
     async def fetch_guild(self):
         s, t = await self._req("GET", f"/guilds/{self.guild_id}")
@@ -147,7 +168,7 @@ class VesperNuker:
         if s in (200, 201, 204):
             print(f"{Fore.RED}[BAN] {Fore.WHITE}{name} {Fore.LIGHTBLACK_EX}({uid}) {Fore.GREEN}ok")
             return 1
-        print(f"{Fore.YELLOW}[BAN-FAIL] {Fore.WHITE}{name} {Fore.LIGHTBLACK_EX}({uid}) {Fore.RED}{s}")
+        print(f"{Fore.YELLOW}[BAN-FAIL] {Fore.WHITE}{name} {Fore.RED}{s}")
         return 0
 
     async def ban_all(self):
@@ -188,7 +209,7 @@ class VesperNuker:
         if s in (200, 201):
             print(f"{Fore.GREEN}[+] Server renamed -> {name}")
         else:
-            print(f"{Fore.RED}[!] Rename failed: {s}")
+            print(f"{Fore.RED}[!] Rename failed: {status_hint(s)}")
 
     async def dm_spam(self, message, count):
         members = await self.fetch_members()
@@ -291,6 +312,75 @@ def ask_int(prompt, default=500):
         return default
 
 
+async def preflight(n):
+    """Verify token + list servers bot is in. Returns True if all good."""
+    print(f"{Fore.LIGHTBLACK_EX}[*] Checking token...")
+
+    s, t = await n.whoami()
+    if s != 200:
+        print(f"{Fore.RED}[!] /users/@me -> {status_hint(s)}")
+        print(f"{Fore.LIGHTBLACK_EX}    body: {t[:300]}")
+        if s == 401:
+            print(f"{Fore.RED}    -> Token is dead or wrong mode.")
+            print(f"{Fore.RED}    -> Bot token needs mode 1. User/selfbot token needs mode 2.")
+            print(f"{Fore.RED}    -> Reset token in Dev Portal and re-copy (no spaces).")
+        return False
+
+    try:
+        me = json.loads(t)
+    except Exception:
+        print(f"{Fore.RED}[!] Cannot parse /users/@me response.")
+        return False
+
+    uname = me.get("username", "?")
+    uid = me.get("id", "?")
+    is_bot_flag = me.get("bot", False)
+    print(f"{Fore.GREEN}[+] Token OK -> {uname}#{me.get('discriminator','0')} ({uid}) bot={is_bot_flag}")
+
+    # warn if mode mismatch
+    if n.is_bot and not is_bot_flag:
+        print(f"{Fore.YELLOW}[!] You chose mode 1 (Bot) but token belongs to a USER account.")
+        print(f"{Fore.YELLOW}    -> Use mode 2 (Selfbot) next time.")
+    if (not n.is_bot) and is_bot_flag:
+        print(f"{Fore.YELLOW}[!] You chose mode 2 (Selfbot) but token belongs to a BOT account.")
+        print(f"{Fore.YELLOW}    -> Use mode 1 (Bot) next time.")
+
+    print(f"{Fore.LIGHTBLACK_EX}[*] Fetching server list...")
+    s, t = await n.my_guilds()
+    if s != 200:
+        print(f"{Fore.RED}[!] /users/@me/guilds -> {status_hint(s)}")
+        print(f"{Fore.LIGHTBLACK_EX}    body: {t[:300]}")
+        return False
+
+    try:
+        guilds = json.loads(t)
+    except Exception:
+        print(f"{Fore.RED}[!] Cannot parse guild list.")
+        return False
+
+    if not isinstance(guilds, list) or len(guilds) == 0:
+        print(f"{Fore.RED}[!] This account is in ZERO servers.")
+        print(f"{Fore.RED}    -> Bot has not been invited anywhere.")
+        print(f"{Fore.RED}    -> Go to Dev Portal -> OAuth2 -> URL Generator.")
+        print(f"{Fore.RED}    -> Scope: bot, applications.commands. Perms: Administrator.")
+        print(f"{Fore.RED}    -> Open URL, pick a server, Authorize. Then retry.")
+        return False
+
+    ids = [g["id"] for g in guilds]
+    print(f"{Fore.GREEN}[+] This account sees {len(guilds)} server(s):")
+    for g in guilds:
+        marker = "  <=  TARGET" if str(g["id"]) == n.guild_id else ""
+        print(f"{Fore.WHITE}      - {g.get('name','?')}  ({g.get('id','?')}){Fore.LIGHTRED_EX}{marker}")
+
+    if n.guild_id not in ids:
+        print(f"{Fore.RED}[!] Server ID you gave ({n.guild_id}) is NOT in the list above.")
+        print(f"{Fore.RED}    -> copy the correct ID from the list above.")
+        return False
+
+    print(f"{Fore.GREEN}[+] Target server confirmed. Ready to nuke.")
+    return True
+
+
 async def main():
     os.system("cls" if os.name == "nt" else "clear")
     print(Fore.LIGHTMAGENTA_EX + BANNER)
@@ -300,31 +390,19 @@ async def main():
 
     token = input(f"{Fore.WHITE}[?] Token: ").strip()
     if not token:
-        print(f"{Fore.RED}[!] No token provided.")
+        print(f"{Fore.RED}[!] No token.")
         return
 
     guild_id = input(f"{Fore.WHITE}[?] Server ID: ").strip()
-    if not guild_id or not guild_id.isdigit():
-        print(f"{Fore.RED}[!] Server ID must be numeric.")
+    if not guild_id.isdigit():
+        print(f"{Fore.RED}[!] Server ID must be digits only.")
         return
 
     try:
         async with VesperNuker(token, guild_id, is_bot) as n:
-            try:
-                g = await n.fetch_guild()
-            except Exception as e:
-                print(f"{Fore.RED}[!] Fetch error: {e}")
-                traceback.print_exc()
+            ok = await preflight(n)
+            if not ok:
                 return
-
-            if not g:
-                print(f"{Fore.RED}[!] Auth failed or no access to guild.")
-                print(f"{Fore.LIGHTBLACK_EX}    -> check token, check mode (bot vs selfbot), check server ID.")
-                print(f"{Fore.LIGHTBLACK_EX}    -> make sure bot is invited to the server with admin.")
-                return
-
-            print(f"{Fore.GREEN}[+] Logged in -> {g.get('name')} ({g.get('id')})")
-            print(f"{Fore.LIGHTBLACK_EX}    mode={'BOT' if is_bot else 'SELFBOT'}")
 
             while True:
                 print(MENU)
@@ -373,7 +451,7 @@ async def main():
                 except Exception as e:
                     print(f"{Fore.RED}[!] action error: {e}")
                     traceback.print_exc()
-                    # keep going, don't kill the loop
+
     except Exception as e:
         print(f"{Fore.RED}[FATAL] {e}")
         traceback.print_exc()
