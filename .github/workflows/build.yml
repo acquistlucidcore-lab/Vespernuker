@@ -8,6 +8,7 @@ on:
 jobs:
   build:
     runs-on: windows-latest
+
     steps:
       - name: checkout
         uses: actions/checkout@v4
@@ -18,24 +19,31 @@ jobs:
           python-version: '3.11'
 
       - name: install deps
+        shell: pwsh
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          python -m pip install --upgrade pip setuptools wheel
+          pip install --upgrade discord.py aiohttp
           pip install pyinstaller
-
-      - name: verify files
-        run: |
-          dir
-          type requirements.txt
+          pip list
 
       - name: build exe
+        shell: pwsh
         run: |
-          pyinstaller --onefile --noconfirm --clean ^
-            --name NXR_NUKER ^
-            --collect-all discord ^
-            --collect-all aiohttp ^
-            --hidden-import aiohttp ^
-            --hidden-import discord ^
+          pyinstaller `
+            --onefile `
+            --noconfirm `
+            --clean `
+            --name NXR_NUKER `
+            --hidden-import discord `
+            --hidden-import discord.ext.commands `
+            --hidden-import discord.ext.tasks `
+            --hidden-import aiohttp `
+            --hidden-import aiohttp.client `
+            --hidden-import aiohttp.connector `
+            --collect-submodules discord `
+            --collect-submodules aiohttp `
+            --copy-metadata discord.py `
+            --copy-metadata aiohttp `
             nxr_nuker.py
 
       - name: upload exe
