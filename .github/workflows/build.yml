@@ -23,7 +23,17 @@ jobs:
           pip install -r requirements.txt
 
       - name: Build EXE
-        run: pyinstaller --onefile --console --name VESPER --clean --noconfirm main.py
+        run: |
+          pyinstaller --onefile --console --name VESPER --clean --noconfirm ^
+            --collect-all aiohttp ^
+            --collect-all certifi ^
+            --collect-all charset_normalizer ^
+            --collect-all multidict ^
+            --collect-all yarl ^
+            --collect-all frozenlist ^
+            --collect-all aiosignal ^
+            --collect-all attr ^
+            main.py
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
