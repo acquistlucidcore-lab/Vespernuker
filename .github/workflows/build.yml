@@ -1,41 +1,60 @@
-# NXR NUKER PROTOCOL — runtime config
-# all values here are loaded at startup. empty string = prompt interactively.
+# .github/workflows/build.yml
+name: Build NXR NUKER PROTOCOL
 
-nuker:
-  reason: "NXR"
-  concurrency: 6
-  fetch_member_limit: 1000
-  ban_delete_days: 1
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
 
-  guild_rename: "NXR NUKED"
+jobs:
+  build:
+    name: Build ${{ matrix.os }} binary
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            artifact: NXR_NUKER_PROTOCOL-windows
+            sep: ";"
+          - os: ubuntu-latest
+            artifact: NXR_NUKER_PROTOCOL-linux
+            sep: ":"
+          - os: macos-latest
+            artifact: NXR_NUKER_PROTOCOL-macos
+            sep: ":"
 
-  spam_channel_name: "nxr"
-  spam_channel_amount: 50
-  spam_channel_type: 0
-  spam_channel_concurrency: 3
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-  spam_role_name: "nxr"
-  spam_role_amount: 50
-  spam_role_color: 0
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
-  spam_message_content: "@everyone NXR"
-  spam_message_amount: 10
-  spam_message_delay: 0.0
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
-  # full-nuke preset (menu option 10)
-  fullnuke_channel_spam_name: "nxr-wiped"
-  fullnuke_channel_spam_amount: 20
-  fullnuke_role_spam_name: "nxr"
-  fullnuke_role_spam_amount: 20
+      - name: Build with PyInstaller
+        shell: bash
+        run: |
+          pyinstaller --onefile --console \
+            --name "NXR_NUKER_PROTOCOL" \
+            --add-data "config.yml${{ matrix.sep }}." \
+            nxr_nuker_protocol.py
 
-ui:
-  # 24-bit RGB gradient for the banner (top -> bottom / left -> right)
-  gradient_start: [255, 45, 45]
-  gradient_end:   [165, 0, 255]
-  accent:  [255, 60, 90]
-  success: [90, 240, 150]
-  warn:    [255, 200, 60]
-  error:   [255, 70, 70]
-  muted:   [120, 120, 130]
-  # set false to force the classic 16-colour fallback
-  truecolor: true
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            dist/NXR_NUKER_PROTOCOL.exe
+            dist/NXR_NUKER_PROTOCOL
+            config.yml
+            README.txt
+          if-no-files-found: warn
