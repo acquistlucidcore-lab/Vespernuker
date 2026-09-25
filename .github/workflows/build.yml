@@ -1,4 +1,5 @@
 name: build
+
 on:
   push:
     branches: [ main ]
@@ -8,20 +9,38 @@ jobs:
   build:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: checkout
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - name: setup python
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: install
-        run: pip install -r requirements.txt pyinstaller
+      - name: install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: verify files
+        run: |
+          dir
+          type requirements.txt
 
       - name: build exe
-        run: pyinstaller --onefile --name NXR_NUKER --noconfirm nxr_nuker.py
+        run: |
+          pyinstaller --onefile --noconfirm --clean ^
+            --name NXR_NUKER ^
+            --collect-all discord ^
+            --collect-all aiohttp ^
+            --hidden-import aiohttp ^
+            --hidden-import discord ^
+            nxr_nuker.py
 
-      - name: upload
+      - name: upload exe
         uses: actions/upload-artifact@v4
         with:
           name: NXR_NUKER
           path: dist/NXR_NUKER.exe
+          if-no-files-found: error
