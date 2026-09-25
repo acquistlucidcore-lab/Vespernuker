@@ -1,54 +1,41 @@
-name: build
+# NXR NUKER PROTOCOL — runtime config
+# all values here are loaded at startup. empty string = prompt interactively.
 
-on:
-  push:
-    branches: [ main ]
-  workflow_dispatch:
+nuker:
+  reason: "NXR"
+  concurrency: 6
+  fetch_member_limit: 1000
+  ban_delete_days: 1
 
-jobs:
-  build:
-    runs-on: windows-latest
+  guild_rename: "NXR NUKED"
 
-    steps:
-      - name: checkout
-        uses: actions/checkout@v4
+  spam_channel_name: "nxr"
+  spam_channel_amount: 50
+  spam_channel_type: 0
+  spam_channel_concurrency: 3
 
-      - name: setup python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
+  spam_role_name: "nxr"
+  spam_role_amount: 50
+  spam_role_color: 0
 
-      - name: install deps
-        shell: pwsh
-        run: |
-          python -m pip install --upgrade pip setuptools wheel
-          pip install --upgrade discord.py aiohttp
-          pip install pyinstaller
-          pip list
+  spam_message_content: "@everyone NXR"
+  spam_message_amount: 10
+  spam_message_delay: 0.0
 
-      - name: build exe
-        shell: pwsh
-        run: |
-          pyinstaller `
-            --onefile `
-            --noconfirm `
-            --clean `
-            --name NXR_NUKER `
-            --hidden-import discord `
-            --hidden-import discord.ext.commands `
-            --hidden-import discord.ext.tasks `
-            --hidden-import aiohttp `
-            --hidden-import aiohttp.client `
-            --hidden-import aiohttp.connector `
-            --collect-submodules discord `
-            --collect-submodules aiohttp `
-            --copy-metadata discord.py `
-            --copy-metadata aiohttp `
-            nxr_nuker.py
+  # full-nuke preset (menu option 10)
+  fullnuke_channel_spam_name: "nxr-wiped"
+  fullnuke_channel_spam_amount: 20
+  fullnuke_role_spam_name: "nxr"
+  fullnuke_role_spam_amount: 20
 
-      - name: upload exe
-        uses: actions/upload-artifact@v4
-        with:
-          name: NXR_NUKER
-          path: dist/NXR_NUKER.exe
-          if-no-files-found: error
+ui:
+  # 24-bit RGB gradient for the banner (top -> bottom / left -> right)
+  gradient_start: [255, 45, 45]
+  gradient_end:   [165, 0, 255]
+  accent:  [255, 60, 90]
+  success: [90, 240, 150]
+  warn:    [255, 200, 60]
+  error:   [255, 70, 70]
+  muted:   [120, 120, 130]
+  # set false to force the classic 16-colour fallback
+  truecolor: true
